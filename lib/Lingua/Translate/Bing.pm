@@ -21,7 +21,7 @@ Version 0.01
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 
 =head1 SYNOPSIS
@@ -121,10 +121,12 @@ Language code. Such as in L<http://msdn.microsoft.com/en-us/library/hh456380.asp
 sub translate {
     my ($self, $text, $to) = @_;
     my $result; 
+
     my @selected_lang = grep{
         /^($to)/ix
         } @lang_codes;
     $to = $selected_lang[0];
+
     if (defined($to)) {
         $result = $self->sendRequest($text, $to, $self->getAccessToken());
         unless (defined($result)) {
@@ -145,7 +147,7 @@ Returns token from Microsoft OAuth service.
 
 sub initAccessToken {
     my ($self) = @_;
-    my $result = "";
+    my $result;
     my $browser = LWP::UserAgent->new();
 
     my $url = "https://datamarket.accesscontrol.windows.net/v2/OAuth2-13";
@@ -179,11 +181,12 @@ Returns last actual tokens from "tokens.xml" file.
 
 
 sub getExistsTokens {
-    my ( $self) = @_;
-    my $result = $self->{xml}->XMLin($self->{tokens_xml});
-    unless (defined($result)) {
-        croak "$!";
+    my ($self) = @_;
+    my $result;
+    if (-f $self->{tokens_xml}) {
+        $result = $self->{xml}->XMLin($self->{tokens_xml});
     }
+    
     return $result;    
 }
 
@@ -199,7 +202,7 @@ sub updateToken {
 
     $access_tokens->{$self->{client_id}}->{'token'} = $self->initAccessToken();
     $self->{xml}->XMLout($access_tokens, OutputFile => 'tokens.xml', XMLDecl => "<?xml version='1.0'?>");  
-    return;
+    return $access_tokens;
 }
 
 =head2 getAccessToken()
@@ -211,14 +214,18 @@ Gets token from "tokens.xml" if it exist. Else update "tokens.xml".
 
 sub getAccessToken {
     my ($self) = @_;
-    my $access_tokens = $self->getExistsTokens();
+    
+    my $access_tokens;
+
     unless (-f $self->{tokens_xml}) {
-        $self->updateToken();
+        $access_tokens = $self->updateToken();
+    } else {
+        $access_tokens = $self->getExistsTokens();
+        unless (defined($access_tokens->{$self->{client_id}})) {
+            $access_tokens = $self->updateToken();
+        }
     }
 
-    unless (defined($access_tokens->{$self->{client_id}})) {
-        $self->updateToken();
-    }
     return $access_tokens->{$self->{client_id}}->{token}; 
 }
 
@@ -253,9 +260,11 @@ sub sendRequest {
     my $response = $browser->get($url, 'Authorization' => $access_token);
     my $result = $response->content;
     my $xml_parser = $self->{xml}->XMLin($result);
-    unless (defined($xml_parser)) {
+    
+    if (defined($result) && !defined($xml_parser)) {
         croak "$result";
     }
+
     return encode('utf8', $xml_parser->{'string'}->{'content'});
 }
 
