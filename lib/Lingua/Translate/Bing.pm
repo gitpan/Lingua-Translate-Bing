@@ -21,14 +21,14 @@ Version 0.01
 
 =cut
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 
 =head1 SYNOPSIS
 
-    use Lingua::Translate::Bing;
+     use Lingua::Translate::Bing;
 
-    my $translator = Lingua::Translate::Bing->new("1111111", "111111");
+    my $translator = Lingua::Translate::Bing->new(client_id => "1111111", client_secret => "111111");
 
     print $translator->translate("Hello", "ru");
     ...
@@ -78,9 +78,19 @@ vi/;
 
 =head1 CONSTRUCTORS
 
-=head2 new($client_id, $client_secret)
+=head2 new(%args)
 
-$client_id and $client_secret you will must get in L<http://datamarket.azure.com/dataset/bing/microsofttranslator>.
+=head3 %args contains: 
+
+=over 1
+
+=item client_id 
+
+=item client_secret 
+
+=back
+
+that you will must get in L<http://datamarket.azure.com/dataset/bing/microsofttranslator>.
 
 B<ATTENTION!>
 Microsoft offers free access to Bing Translator for no more than 2,000,000 characters/month. 
@@ -285,7 +295,7 @@ automatically be notified of progress on your bug as I make changes.
 
 You can find documentation for this module with the perldoc command.
 
-    perldoc BingTranslationApi
+    perldoc Lingua::Translate::Bing
 
 
 You can also look for information at:
