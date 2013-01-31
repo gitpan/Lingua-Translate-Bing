@@ -1,32 +1,33 @@
 package Lingua::Translate::Bing;
 
-use 5.006;
+use 5.010;
 use strict;
 use warnings;
-use Encode;
+use utf8;
+use Carp;
 
 use LWP::UserAgent;
-use URI::Escape;
+use LWP::Protocol::https;
 use JSON::XS;
-use XML::Simple;
-use Carp;
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
+use SOAP::Lite; #+trace => 'debug'; 
 
 =head1 NAME
 
-Lingua::Translate::Bing - class to access the function of translation provided by "Bing Translation Api". 
+Lingua::Translate::Bing - Class for accessing the functions of translation, provided by the "Bing Translation Api".
 
 =head1 VERSION
 
-Version 0.01
+Version 0.04
 
 =cut
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 
 =head1 SYNOPSIS
 
-     use Lingua::Translate::Bing;
+    use Lingua::Translate::Bing;
 
     my $translator = Lingua::Translate::Bing->new(client_id => "1111111", client_secret => "111111");
 
@@ -36,51 +37,12 @@ our $VERSION = '0.03';
 
 =cut
 
-my @lang_codes = qw /ar 
-bg
-ca
-zh-CHS
-zh-CHT
-cs 
-da 
-nl 
-en 
-et 
-fa
-fi 
-fr 
-de
-el 
-ht 
-he 
-hi 
-hu 
-id 
-it 
-ja 
-ko 
-lv 
-lt 
-mww 
-no 
-pl 
-pt 
-ro 
-ru 
-sk 
-sl 
-es 
-sv 
-th
-tr
-uk 
-vi/;
 
 =head1 CONSTRUCTORS
 
 =head2 new(%args)
 
-=head3 %args contains: 
+%args contains: 
 
 =over 1
 
@@ -98,64 +60,87 @@ Microsoft offers free access to Bing Translator for no more than 2,000,000 chara
 =cut
 
 sub new {
-    my ($class, %args)  = @_;
-    
-    my $self = { 
+    my ($class, %args) = @_;
+
+	my $self = { 
         client_id => $args{'client_id'},
         client_secret => $args{'client_secret'},
-        tokens_xml => 'tokens.xml',
-        xml => XML::Simple->new(KeepRoot => 1),
+        token_time => undef,
+        token_update_period => 600,
+        token => undef,
     };
     bless $self, $class;
     return $self;
 }
 
-=head1 METHODS
+=head2 getLanguagesForTranslate()
 
-=head2 translate($text, $to)
+Return array of supported languages.
+
+=cut
+
+sub getLanguagesForTranslate {
+    my ($self) = @_;
+    my $answer = $self->_sendRequest("GetLanguagesForTranslate", "appId" => "");
+    return $answer->{string};
+}
+
+=head2 detect($text)
+
+Return text input language code.
 
 =over 1
 
 =item $text  
 
-Text, that must will be translated.
+Undetected text.
+
+=back
+
+=cut
+
+sub detect {
+    my ($self, $text) = @_;
+    my $answer = $self->_sendRequest("Detect", "text" => $text);
+    return $answer;
+}
+
+=head2 translate($text, $to, $from)
+
+Return translation of input text.
+
+=over 1
+
+=item $text  
+
+Text for translation.
 
 =item $to
 
-Language code. Such as in L<http://msdn.microsoft.com/en-us/library/hh456380.aspx>
+Target language code.
+
+=item $from
+
+Language code of input text. Not requeried, but may by mistakes if don't set this argument. It will may be occure because <B>detect</B> method don't define correct language always.
 
 =back
 
 =cut
 
 sub translate {
-    my ($self, $text, $to) = @_;
-    my $result; 
-
-    my @selected_lang = grep{
-        /^($to)/ix
-        } @lang_codes;
-    $to = $selected_lang[0];
-
-    if (defined($to)) {
-        $result = $self->sendRequest($text, $to, $self->getAccessToken());
-        unless (defined($result)) {
-            $self->updateToken();
-            $result = $self->sendRequest($text, $to, $self->getAccessToken());
-        }
-    } else {
-        croak "Language undefined";
-    }
-    return $result;     
+    my ($self, $text, $to, $from) = @_;
+    my $answer = $self->_sendRequest("Translate", "text" => $text, "from" => $from, "to" => $to, "contentType" =>
+        "text/plain");
+    return $answer;
 }
 
-=head2 initAccessToken()
+sub _setUpdateTokenPeriod {
+    my ($self, $period) = @_;
+    $self->{token_update_period} = $period;
+    return;
+}
 
-Returns token from Microsoft OAuth service.
-
-=cut
-
-sub initAccessToken {
+sub _initAccessToken {
     my ($self) = @_;
     my $result;
     my $browser = LWP::UserAgent->new();
@@ -166,117 +151,66 @@ sub initAccessToken {
 
     my $response = $browser->post( $url,
              [
-             'client_id' => $self->{client_id},
-             'client_secret' => $self->{client_secret},
-             'scope' => $scope,
-             'grant_type' => $grant_type
+              'grant_type' => $grant_type,
+              'scope' => $scope,
+              'client_id' => $self->{client_id},
+              'client_secret' => $self->{client_secret}
              ],
      );
     if ($response) {
-         my $content = $response->content;
+        my $content = $response->content;
         my $json_xs = JSON::XS->new();
         $result = $json_xs->decode($content)->{'access_token'};
     }
     unless (defined($result)) {
         croak "Failed init access token";
     }
-    return uri_escape($result);
-}
 
-=head2 getExistsTokens()
-
-Returns last actual tokens from "tokens.xml" file.
-
-=cut
-
-
-sub getExistsTokens {
-    my ($self) = @_;
-    my $result;
-    if (-f $self->{tokens_xml}) {
-        $result = $self->{xml}->XMLin($self->{tokens_xml});
+    if ($result) {
+        $self->{token_time} = clock_gettime(CLOCK_MONOTONIC);
+        $result = "Bearer " . $result;
+        $self->{token} = $result;
     }
-    
-    return $result;    
+    return $result;
 }
 
-=head2 updateToken()
-
-Gets token from Microsoft OAuth service and write it to "tokens.xml".
-
-=cut
-
-sub updateToken {
-    my ($self) = @_;
-    my $access_tokens = $self->getExistsTokens();
-
-    $access_tokens->{$self->{client_id}}->{'token'} = $self->initAccessToken();
-    $self->{xml}->XMLout($access_tokens, OutputFile => 'tokens.xml', XMLDecl => "<?xml version='1.0'?>");  
-    return $access_tokens;
-}
-
-=head2 getAccessToken()
-
-Gets token from "tokens.xml" if it exist. Else update "tokens.xml".
-
-=cut
-
-
-sub getAccessToken {
+sub _getAccessToken {
     my ($self) = @_;
     
-    my $access_tokens;
+    if (!$self->{token} || (clock_gettime(CLOCK_MONOTONIC) - $self->{token_time} > $self->{token_update_period})) {
+        $self->_initAccessToken();
+    }
+    return $self->{token};
+}
 
-    unless (-f $self->{tokens_xml}) {
-        $access_tokens = $self->updateToken();
-    } else {
-        $access_tokens = $self->getExistsTokens();
-        unless (defined($access_tokens->{$self->{client_id}})) {
-            $access_tokens = $self->updateToken();
+sub _sendRequest {
+    my ($self, $function, %args) = @_;
+
+    my $token = $self->_getAccessToken();
+    my $soap = SOAP::Lite->proxy('http://api.microsofttranslator.com/V2/Soap.svc')
+                         ->on_action(sub {return
+                                 "\"http://api.microsofttranslator.com/V2/LanguageService/$function\""})
+                         ->readable(1)
+                         ->encodingStyle("")
+                         ->encoding(undef)
+                         ->default_ns(undef);
+
+    $soap->transport->http_request->header("Authorization" => $token);
+    my $method = SOAP::Data->name($function)->attr({xmlns => 'http://api.microsofttranslator.com/V2'});
+    my @all_arguments = qw /appId locale languageCodes text from to contentType category/;
+    my @params; 
+    foreach (@all_arguments) {
+        my ($key, $value) = ($_, $args{$_});
+        if (defined $value) { 
+            my $argument = SOAP::Data->name($key)->uri(undef)->value($value)->type("");
+            push @params, $argument;
         }
     }
-
-    return $access_tokens->{$self->{client_id}}->{token}; 
+    my $answer = $soap->call($method => @params);
+    return $answer->result;
 }
 
-=head2 sendRequest($text, $to, $access_token)
-
-=over 1
-
-=item $text 
-
-Text, that must will be translated.
-
-=item $to 
-
-Language code.
-
-=item $access_token 
-
-Token from Microsoft OAuth service.
-
-=back
-
-=cut
-
-
-sub sendRequest {
-    my ($self, $text, $to, $access_token) = @_;
-    $access_token = "Bearer " . $access_token; 
-    my $url =
-    "http://api.microsofttranslator.com/V2/Http.svc/Translate?text=$text&to=$to&appId=$access_token&contentType=text/plain";
-
-    my $browser = LWP::UserAgent->new();
-    my $response = $browser->get($url, 'Authorization' => $access_token);
-    my $result = $response->content;
-    my $xml_parser = $self->{xml}->XMLin($result);
-    
-    if (defined($result) && !defined($xml_parser)) {
-        croak "$result";
-    }
-
-    return encode('utf8', $xml_parser->{'string'}->{'content'});
-}
+1;
 
 =head1 AUTHOR
 
